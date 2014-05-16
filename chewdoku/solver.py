@@ -12,6 +12,12 @@ class Solver(controller.CementBaseController):
                 'action': 'store',
                 'help': 'File to read puzzle data from',
             }),
+            (['--line', '-l'], {
+                'action': 'store',
+                'default': 1,
+                'type': int,
+                'help': 'Line number to read from file',
+            }),
             (['--difficulty', '-d'], {
                 'action': 'store',
                 'type': int,
@@ -23,7 +29,8 @@ class Solver(controller.CementBaseController):
     def load_puzzle(self):
         initial_state = ''
         with open(self.app.pargs.input, 'r') as input:
-            initial_state = input.readline()
+            for line in range(self.app.pargs.line):
+                initial_state = input.readline()
         game = Game()
         for square, value in enumerate(initial_state):
             if value.isdigit() and int(value) > 0:
