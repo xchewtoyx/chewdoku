@@ -1,16 +1,17 @@
 class SolutionFound(Exception):
     pass
 
-class NoCandidates(Exception):
+class InvalidState(Exception):
     pass
 
 class Game(object):
-    def __init__(self):
+    def __init__(self, app):
+        self.app = app
         self.squares = [Square(position) for position in range(81)]
 
     def row(self, value):
         squares = [square for square in self.squares if square.row == value]
-        return squares
+        return Group(squares)
 
     def rows(self):
         for row in range(9):
@@ -18,7 +19,7 @@ class Game(object):
 
     def column(self, value):
         squares = [square for square in self.squares if square.column == value]
-        return squares
+        return Group(squares)
 
     def columns(self):
         for column in range(9):
@@ -26,15 +27,35 @@ class Game(object):
 
     def block(self, value):
         squares = [square for square in self.squares if square.block == value]
-        return squares
+        return Group(squares)
 
     def blocks(self):
         for block in range(9):
             yield self.block(block)
 
+    def groups(self):
+        for row in self.rows():
+            yield row
+        for column in self.columns():
+            yield column
+        for block in self.blocks():
+            yield block
+
+    def square_groups(self, square):
+        return [
+            self.row(square.row),
+            self.column(square.column),
+            self.block(square.block),
+        ]
+
+    def common_groups(self, squares):
+        for group in self.groups:
+            if set(group) > squares:
+                yield group
+
     def print_state(self):
         for row in range(9):
-            print ' '.join(str(square) for square in self.row(row))
+            print ' '.join(str(square) for square in sorted(self.row(row)))
 
     def assign(self, square, value):
         self.squares[square].assign(value)
@@ -42,6 +63,30 @@ class Game(object):
     def solved(self):
         states = [square.solved for square in self.squares]
         return states.count(False) == 0
+
+    def validate(self):
+        self.app.log.debug('Validating game state')
+        valid_solutions = set(range(1,10))
+        for group in self.groups():
+            solved_values = [square.solution for square in group.solved]
+            self.app.log.debug('group solutions: %r' % solved_values)
+            for value in solved_values:
+                if value not in valid_solutions:
+                    raise InvalidState('Invalid value %r in group %r' % (
+                                       value, group))
+                if solved_values.count(value) > 1:
+                    raise InvalidState('Conflict for value %d in group  %r' % (
+                        value, group))
+
+class Group(set):
+    @property
+    def solved(self):
+        solved_squares = [square for square in self if square.solved]
+        return set(solved_squares)
+
+    @property
+    def unsolved(self):
+        return self - self.solved
 
 class Square(object):
     def __init__(self, value):
@@ -56,6 +101,9 @@ class Square(object):
         else:
             value = '!'
         return value
+
+    def __int__(self):
+        return self.value
 
     @property
     def solved(self):
@@ -82,12 +130,9 @@ class Square(object):
         return 3 * (self.row // 3) + self.column // 3
 
     def eliminate(self, value):
-        try:
-            self.candidates.remove(value)
-        except KeyError:
-            pass
+        self.candidates.discard(value)
         if not self.candidates:
-            raise NoCandidates("Square %r has no remaining candidates" % (
+            raise InvalidState("Square %r has no remaining candidates" % (
                 self.value))
 
     def assign(self, value):
