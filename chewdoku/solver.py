@@ -2,7 +2,7 @@ from itertools import combinations
 
 from cement.core import controller, handler
 
-from chewdoku.models import Game, SolutionFound, InvalidState
+from chewdoku.models import Game, Group, SolutionFound, InvalidState
 
 class Solver(controller.CementBaseController):
     class Meta:
@@ -24,6 +24,10 @@ class Solver(controller.CementBaseController):
                 'default': 0,
                 'help': 'Use techniques up to certain difficulty level.',
             }),
+            (['--progress', '-v'], {
+                'action': 'store_true',
+                'help': 'Print candidate table before each solve pass.'
+            }),
         ]
 
     def load_puzzle(self):
@@ -43,11 +47,11 @@ class Solver(controller.CementBaseController):
         for alternate in group:
             if value in alternate.candidates:
                 self.app.log.info('Removing %r from square %r' % (
-                    value, alternate.value))
+                    value, alternate))
                 alternate.eliminate(value)
                 if alternate.solved:
                     self.app.log.info('%r only value possible for square %r' % (
-                        alternate.solution, alternate.value))
+                        alternate.solution, alternate))
                 changes.add(True)
 
     def eliminate_solved(self, game):
@@ -92,36 +96,59 @@ class Solver(controller.CementBaseController):
         return True in changes
 
     def naked_subset(self, game, group, subset, changes):
-        squares = set()
+        squares = Group()
         for square in group:
-            if subset == square.candidates:
+            if subset >= square.candidates:
                 squares.add(square)
         if len(squares) == len(subset):
-            conflicts = set()
-            for square in group:
-                if square.candidates & subset and not square in squares:
-                    conflicts.add(square)
+            conflicts = Group()
+            for value in subset:
+                conflicts |= group.with_candidate(value)
+            conflicts = conflicts - squares
             if conflicts:
                 self.app.log.debug(
                     'Found naked subset %r in squares %r' % (
-                        subset, [square.value for square in squares]))
+                        subset, squares))
                 for value in subset:
                     self.eliminate_from_group(conflicts, value, changes)
 
-    def find_pair_in_group(self, game, group, changes):
-        unsolved = [square for square in group if not square.solved]
+    def hidden_subset(self, game, group, subset, changes):
+        squares = Group()
+        for square in group:
+            if subset & square.candidates:
+                squares.add(square)
+        if len(squares) == len(subset):
+            candidates = set()
+            for square in squares:
+                candidates |= square.candidates
+            candidates -= subset
+            if candidates:
+                self.app.log.debug(
+                    'Found hidden subset %r in squares %r' % (
+                        subset, squares))
+                for value in candidates:
+                    self.eliminate_from_group(squares, value, changes)
+
+    def find_subset_in_group(self, game, group, size, changes):
+        unsolved = group.unsolved
         candidates = set()
         for square in unsolved:
             candidates.update(square.candidates)
-        for pair in combinations(candidates, 2):
-            pair = set(pair)
-            squares = []
-            self.naked_subset(game, unsolved, pair, changes)
+        for subset in combinations(candidates, size):
+            subset = set(subset)
+            self.naked_subset(game, unsolved, subset, changes)
+            self.hidden_subset(game, unsolved, subset, changes)
 
     def find_pairs(self, game):
         changes = set()
         for group in game.groups():
-            self.find_pair_in_group(game, group, changes)
+            self.find_subset_in_group(game, group, 2, changes)
+        return True in changes
+
+    def find_triplets(self, game):
+        changes = set()
+        for group in game.groups():
+            self.find_subset_in_group(game, group, 3, changes)
         return True in changes
 
     def find_candidate_lines(self, game):
@@ -142,9 +169,44 @@ class Solver(controller.CementBaseController):
                     changes.add(True)
         return changes
 
+    def find_hidden_lines(self, game):
+        block_pairs = combinations(game.blocks(), 2)
+        changes = set()
+        for pair in block_pairs:
+            squares = pair[0] | pair[1]
+            unsolved = squares.unsolved
+            values = set()
+            for square in unsolved:
+                values |= square.candidates
+            for value in values:
+                potential_squares = squares.with_candidate(value)
+                eliminated = Group()
+                # If pair of horizontal blocks
+                if ( pair[0].rows == pair[1].rows and
+                     len(potential_squares.rows) == 2 ):
+                    for row in potential_squares.rows:
+                        eliminated |= game.row(row)
+                if ( pair[0].columns == pair[1].columns and
+                     len(potential_squares.columns) == 2 ):
+                    for column in potential_squares.columns:
+                        eliminated |= game.column(column)
+                eliminated -= squares
+                eliminated = eliminated.with_candidate(value)
+                if eliminated:
+                    self.app.log.info(
+                        'Block block interaction for value %d. '
+                        'Eliminating from %r due to %r.' % (
+                            value, eliminated, potential_squares))
+                    self.eliminate_from_group(eliminated, value, changes)
+            if True in changes:
+                return True
+        return False
+
     def run_solver(self, game):
-        levels = set()
+        levels = set([0])
         while True:
+            if self.app.pargs.progress:
+                game.print_candidates()
             self.app.log.debug('Validating game state')
             game.validate()
             self.app.log.debug('Eliminating values based on solved cells')
@@ -159,13 +221,26 @@ class Solver(controller.CementBaseController):
             if self.find_candidate_lines(game):
                 levels.add(3)
                 continue
+            self.app.log.debug('Eliminating based on hidden lines')
+            if self.find_hidden_lines(game):
+                levels.add(4)
+                continue
             self.app.log.debug('Searching for pairs')
             if self.find_pairs(game):
-                levels.add(4)
+                levels.add(5)
+                continue
+            self.app.log.debug('Searching for triplets')
+            if self.find_triplets(game):
+                levels.add(6)
                 continue
             game.validate()
             break
-        self.app.log.info('Puzzle difficulty level: %d' % max(levels))
+        level = str(max(levels))
+        if game.solved():
+            self.app.log.info('Puzzle solved.')
+        else:
+            level = '*'
+        self.app.log.info('Puzzle difficulty level: ' + level)
         self.app.log.info('levels used: %r' % sorted(levels))
 
     @controller.expose(
@@ -186,6 +261,12 @@ class Solver(controller.CementBaseController):
         except (SolutionFound, InvalidState, ValueError) as exception:
             self.app.log.info('Terminating solution: %r' % exception)
         game.print_state()
+
+    @controller.expose(help='Show candidate status at end of solve attempt')
+    def candidates(self):
+        game = self.load_puzzle()
+        self.eliminate_solved(game)
+        game.print_candidates()
 
 def load():
     handler.register(Solver)

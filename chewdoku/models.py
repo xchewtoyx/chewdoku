@@ -57,12 +57,39 @@ class Game(object):
         for row in range(9):
             print ' '.join(str(square) for square in sorted(self.row(row)))
 
+    def candidate_column(self, row, subrow, column):
+        column_text = ''
+        square = self.squares[row*9 + column]
+        for subcolumn in range(3):
+            candidate = subrow*3 + subcolumn + 1
+            if square.solved:
+                column_text += '%d ' % square.solution
+            elif candidate in square.candidates:
+                column_text += '%d ' % candidate
+            else:
+                column_text += '  '
+        return column_text
+
+    def candidate_subrows(self, row):
+        for subrow in range(3):
+            subrow_text = ''
+            for column in range(9):
+                subrow_text += self.candidate_column(
+                    row, subrow, column) + '  '
+            yield subrow_text
+
+    def print_candidates(self):
+        for row in range(9):
+            for subrow in self.candidate_subrows(row):
+                print subrow
+            print
+
     def assign(self, square, value):
         self.squares[square].assign(value)
 
     def solved(self):
         states = [square.solved for square in self.squares]
-        return states.count(False) == 0
+        return False not in states
 
     def validate(self):
         self.app.log.debug('Validating game state')
@@ -88,10 +115,28 @@ class Group(set):
     def unsolved(self):
         return self - self.solved
 
+    @property
+    def rows(self):
+        return set(square.row for square in self)
+
+    @property
+    def columns(self):
+        return set(square.column for square in self)
+
+    @property
+    def blocks(self):
+        return set(square.block for square in self)
+
+    def with_candidate(self, value):
+        return Group(square for square in self if value in square.candidates)
+
 class Square(object):
     def __init__(self, value):
         self.value = value
         self.candidates = set(range(1,10))
+
+    def __repr__(self):
+        return 'Square<%d (%d, %d)>' % (self.value, self.column, self.row)
 
     def __str__(self):
         if len(self.candidates) > 1:
